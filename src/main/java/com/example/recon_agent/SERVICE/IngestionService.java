@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 
+// this is the orchestration layer we  have developed just call the 3 independent parsers for the sake of simplicity and readablity.
 // calling all the 3 parsers seperately in order for easy testing in case of commandlinerun
 @Service
 @AllArgsConstructor
