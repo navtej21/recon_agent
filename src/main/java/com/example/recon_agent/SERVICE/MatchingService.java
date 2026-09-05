@@ -1,5 +1,6 @@
 package com.example.recon_agent.SERVICE;
 
+import com.example.recon_agent.AI_LAYER.ClaudeApiClient;
 import com.example.recon_agent.ENUM.ExceptionCategory;
 import com.example.recon_agent.ENUM.MatchType;
 import com.example.recon_agent.ENUM.SourceSystem;
@@ -41,6 +42,7 @@ public class MatchingService {
     private final MatchResultRepo matchResultRepository;
     private final ReconExceptionRepo reconExceptionRepository;
     private final AuditLogEntryRepository auditLogEntryRepository;
+    private final ClaudeApiClient claudeApiClient;
 
     /** Runs all 4 passes in the correct order. Returns a summary count per pass. */
     public Map<String, Integer> runFullPipeline() {
@@ -216,11 +218,19 @@ public class MatchingService {
                 markConsumedAndLog(txn, "UNMATCHED", rule, 0.0);
             }
 
+            String llmExplanation = null;
+            if (category == ExceptionCategory.UNEXPLAINED) {
+                var explanation = claudeApiClient.explainException(buildExceptionContext(group));
+                llmExplanation = explanation.getLikelyCause() + " | Recommendation: " + explanation.getRecommendation();
+            }
+
             reconExceptionRepository.save(ReconException.builder()
                     .matchResult(matchResult)
                     .category(category)
+                    .llmExplanation(llmExplanation)
                     .status("OPEN")
                     .build());
+
             residualCount++;
         }
         log.info("Residual pass complete: {} unmatched groups classified", residualCount);
@@ -294,5 +304,14 @@ public class MatchingService {
             index.put(txn.getExternalRef(), txn); // safe: duplicates already removed by pass 1
         }
         return index;
+    }
+
+
+    private String buildExceptionContext(List<Transaction> group){
+        StringBuilder sb=new StringBuilder();
+        for(Transaction txn:group){
+            sb.append(String.format("Source:%s,Ref:%s,Amount:%s,Date:%s%n",txn.getSourceSystem(),txn.getExternalRef(),txn.getAmount(),txn.getTransactionDate()));
+        }
+        return sb.toString();
     }
 }

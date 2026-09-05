@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Reconciliation Agent Dashboard</title>
+    <style>
+        body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; padding: 24px; }
+        h1 { font-size: 20px; margin-bottom: 4px; }
+        .subtitle { color: #94a3b8; margin-bottom: 24px; font-size: 13px; }
+        .cards { display: flex; gap: 16px; margin-bottom: 32px; flex-wrap: wrap; }
+        .card { background: #1e293b; border-radius: 10px; padding: 16px 20px; min-width: 140px; }
+        .card .label { font-size: 12px; color: #94a3b8; margin-bottom: 6px; }
+        .card .value { font-size: 26px; font-weight: 600; }
+        .value.green { color: #4ade80; }
+        .value.amber { color: #fbbf24; }
+        section { margin-bottom: 32px; }
+        h2 { font-size: 15px; color: #cbd5e1; border-bottom: 1px solid #334155; padding-bottom: 8px; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #334155; }
+        th { color: #94a3b8; font-weight: 500; }
+        .badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+        .badge.DUPLICATE { background: #7c2d12; color: #fdba74; }
+        .badge.MISSING { background: #713f12; color: #fde047; }
+        .badge.UNEXPLAINED { background: #581c87; color: #d8b4fe; }
+        .filters button { background: #1e293b; border: 1px solid #334155; color: #e2e8f0; padding: 6px 12px; border-radius: 6px; margin-right: 8px; cursor: pointer; font-size: 12px; }
+        .filters button.active { background: #334155; border-color: #64748b; }
+        .lookup { display: flex; gap: 8px; margin-bottom: 12px; }
+        .lookup input { flex: 1; background: #1e293b; border: 1px solid #334155; color: #e2e8f0; padding: 8px 10px; border-radius: 6px; }
+        .lookup button { background: #2563eb; border: none; color: white; padding: 8px 16px; border-radius: 6px; cursor: pointer; }
+        .txn-detail { font-size: 11px; color: #94a3b8; }
+        .run-btn { background: #16a34a; border: none; color: white; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; margin-bottom: 12px; }
+        .empty { color: #64748b; font-size: 13px; padding: 12px 0; }
+    </style>
+</head>
+<body>
+
+<h1>Reconciliation Agent</h1>
+<div class="subtitle">Razorpay AI Buildathon — AI Finance Controller Track</div>
+
+<div class="cards" id="summaryCards"></div>
+
+<section>
+    <h2>Exceptions <span class="filters" id="categoryFilters" style="float:right"></span></h2>
+    <button class="run-btn" onclick="triggerRun()">Re-run Reconciliation</button>
+    <table id="exceptionsTable">
+        <thead>
+        <tr><th>ID</th><th>Category</th><th>Status</th><th>Transactions</th><th>LLM Explanation</th></tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+</section>
+
+<section>
+    <h2>Audit Trail Lookup</h2>
+    <div class="lookup">
+        <input id="refInput" placeholder="Enter transaction ref, e.g. UTR100025" />
+        <button onclick="lookupAudit()">Lookup</button>
+    </div>
+    <table id="auditTable">
+        <thead>
+        <tr><th>Timestamp</th><th>Source</th><th>Decision</th><th>Rule Fired</th><th>Confidence</th></tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+</section>
+
+<script>
+    const API_BASE = "http://localhost:8081/reconciliation";
+    let activeCategory = null;
+
+    async function loadSummary() {
+      const res = await fetch(`${API_BASE}/summary`);
+      const data = await res.json();
+
+      const cards = [
+        { label: "Total Transactions", value: data.totalTransactions },
+        { label: "Match Rate", value: data.matchRatePercent.toFixed(1) + "%", cls: "green" },
+        { label: "Exact Matches", value: data.matchesByType.EXACT || 0 },
+        { label: "Fuzzy Matches", value: (data.matchesByType.FUZZY_HIGH || 0) + (data.matchesByType.FUZZY_LOW || 0) },
+        { label: "Exceptions", value: data.matchesByType.UNMATCHED || 0, cls: "amber" },
+      ];
+
+      document.getElementById("summaryCards").innerHTML = cards.map(c => `
+        <div class="card">
+          <div class="label">${c.label}</div>
+          <div class="value ${c.cls || ''}">${c.value}</div>
+        </div>
+      `).join("");
+
+      const categories = Object.keys(data.exceptionsByCategory);
+      document.getElementById("categoryFilters").innerHTML =
+        `<button class="${activeCategory === null ? 'active' : ''}" onclick="filterCategory(null)">All</button>` +
+        categories.map(c => `<button class="${activeCategory === c ? 'active' : ''}" onclick="filterCategory('${c}')">${c}</button>`).join("");
+    }
+
+    async function loadExceptions() {
+      const url = activeCategory ? `${API_BASE}/exceptions?category=${activeCategory}` : `${API_BASE}/exceptions`;
+      const res = await fetch(url);
+      const data = await res.json();
+      const tbody = document.querySelector("#exceptionsTable tbody");
+
+      if (data.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" class="empty">No exceptions in this category.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = data.map(e => `
+        <tr>
+          <td>${e.id}</td>
+          <td><span class="badge ${e.category}">${e.category}</span></td>
+          <td>${e.status}</td>
+          <td class="txn-detail">${e.transactions.map(t => `${t.sourceSystem}: ${t.externalRef} / ${t.amount} / ${t.transactionDate}`).join("<br>")}</td>
+          <td>${e.llmExplanation || '<span class="empty">—</span>'}</td>
+        </tr>
+      `).join("");
+    }
+
+    function filterCategory(category) {
+      activeCategory = category;
+      loadSummary();
+      loadExceptions();
+    }
+
+    async function lookupAudit() {
+      const ref = document.getElementById("refInput").value.trim();
+      if (!ref) return;
+      const res = await fetch(`${API_BASE}/audit-trail/${encodeURIComponent(ref)}`);
+      const data = await res.json();
+      const tbody = document.querySelector("#auditTable tbody");
+
+      if (data.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" class="empty">No audit history found for "${ref}".</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = data.map(a => `
+        <tr>
+          <td>${new Date(a.timestamp).toLocaleString()}</td>
+          <td>${a.sourceSystem}</td>
+          <td>${a.decision}</td>
+          <td>${a.ruleFired}</td>
+          <td>${a.confidenceScore.toFixed(2)}</td>
+        </tr>
+      `).join("");
+    }
+
+    async function triggerRun() {
+      const res = await fetch(`${API_BASE}/run`, { method: "POST" });
+      const data = await res.json();
+      alert(`Pipeline run complete:\n${JSON.stringify(data, null, 2)}`);
+      loadSummary();
+      loadExceptions();
+    }
+
+    loadSummary();
+    loadExceptions();
+</script>
+
+</body>
+</html>
